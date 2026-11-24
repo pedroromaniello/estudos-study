@@ -536,6 +536,17 @@ create policy "own data" on public.progress
   </div>
 </div>
 
+<div class="overlay hidden" id="overlay-confirm" style="z-index:995">
+  <div class="overlay-card" style="max-width:440px">
+    <div class="overlay-title">Confirmar</div>
+    <div class="overlay-sub" id="cf-msg" style="margin-bottom:6px;color:var(--text);font-size:14px"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="cf-ok">Continuar</button>
+      <button class="btn btn-ghost" id="cf-cancel">Cancelar</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay hidden" id="overlay-pdi-change">
   <div class="overlay-card">
     <div class="overlay-title">🤝 Registrar mudança combinada</div>
@@ -1319,6 +1330,27 @@ function sanitizeHtml(html){
   walk(tpl.content);
   return tpl.innerHTML;
 }
+// Confirmação dentro do app. O confirm() do navegador pode estar bloqueado
+// ("não permitir mais diálogos") e aí devolve false sem mostrar nada.
+let confirmResolve = null;
+function askConfirm(message, { okLabel = 'Continuar', danger = false } = {}){
+  if (confirmResolve) closeConfirm(false);
+  $('cf-msg').textContent = message;
+  const ok = $('cf-ok');
+  ok.textContent = okLabel;
+  ok.className = 'btn ' + (danger ? 'btn-danger' : 'btn-primary');
+  $('overlay-confirm').classList.remove('hidden');
+  setTimeout(() => ok.focus(), 30);
+  return new Promise(resolve => { confirmResolve = resolve; });
+}
+function closeConfirm(result){
+  $('overlay-confirm').classList.add('hidden');
+  if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(result); }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  $('cf-ok').onclick = () => closeConfirm(true);
+  $('cf-cancel').onclick = () => closeConfirm(false);
+});
 function anyOverlayOpen(){ return !!document.querySelector('.overlay:not(.hidden)'); }
 
 function initSupabase(url, anon) {
@@ -1914,7 +1946,7 @@ function renderPdiPage(){
       else if (act==='down') movePdiItem(it.id, 1);
       else if (act==='edit') showPdiItemOverlay(it.id);
       else if (act==='done') togglePdiDone(it.id);
-      else if (act==='archive') { if (confirm(`Tirar "${it.title}" do plano? Ele vai para Arquivados e o progresso fica guardado.`)) archivePdiItem(it.id); }
+      else if (act==='archive') { askConfirm(`Tirar "${it.title}" do plano? Ele vai para Arquivados e o progresso fica guardado.`, { okLabel:'Arquivar' }).then(ok => { if (ok) archivePdiItem(it.id); }); }
       else if (act==='study') openPdiItem(it.id, ()=>showPage('pdi'));
     });
     list.appendChild(row);
@@ -2199,7 +2231,7 @@ async function createConcursoWithAI(){
 async function suggestEditalForExisting(){
   const c = getConcurso(currentConcursoId);
   if (!c || !requireApiKey()) return;
-  if (!confirm('A IA vai sugerir matérias com base em editais anteriores e ADICIONAR à lista (sem apagar as atuais). Continuar?')) return;
+  if (!(await askConfirm('A IA vai sugerir matérias com base em editais anteriores e ADICIONAR à lista (sem apagar as atuais). Continuar?'))) return;
   const btn = $('cc-suggest-btn');
   const stop = withTimer(btn, 'Sugerindo...');
   try {
@@ -2240,10 +2272,10 @@ async function importEditalWithAI(){
   finally { stop(); }
 }
 
-function deleteConcurso(id, ev){
+async function deleteConcurso(id, ev){
   if (ev) ev.stopPropagation();
   const c = getConcurso(id);
-  if (!confirm(`Excluir "${c.name}" e todo o progresso dele? Não pode ser desfeito.`)) return;
+  if (!(await askConfirm(`Excluir "${c.name}" e todo o progresso dele? Não pode ser desfeito.`, { okLabel:'Excluir', danger:true }))) return;
   state.concursos = state.concursos.filter(x=>x.id!==id);
   scheduleSave(); renderHome();
 }
@@ -2279,11 +2311,11 @@ function saveMateria(){
   }
   scheduleSave(); hideMateriaOverlay(); renderConcursoMaterias();
 }
-function deleteMateria(matId, ev){
+async function deleteMateria(matId, ev){
   if (ev) ev.stopPropagation();
   const c = getConcurso(currentConcursoId);
   const m = getMateria(c, matId);
-  if (!confirm(`Excluir a matéria "${m.name}"?`)) return;
+  if (!(await askConfirm(`Excluir a matéria "${m.name}"?`, { okLabel:'Excluir', danger:true }))) return;
   c.materias = c.materias.filter(x=>x.id!==matId);
   if (c.progress) delete c.progress[matId];
   scheduleSave(); renderConcursoMaterias();
@@ -2448,7 +2480,7 @@ function renderCronogramaView(){
   if (c.cronograma && c.cronograma.length) renderCronogramaList();
   else $('crono-list').innerHTML = `<div class="crono-empty">Defina a data da prova e clique em "Gerar cronograma". Os tópicos são intercalados entre as matérias e os últimos dias ficam reservados para revisão.</div>`;
 }
-function generateCronograma(){
+async function generateCronograma(){
   const c = getConcurso(currentConcursoId);
   const dateStr = $('crono-date').value;
   if (!dateStr) { toast('Escolha a data da prova.', 'error'); return; }
@@ -2456,7 +2488,7 @@ function generateCronograma(){
   const daysLeft = daysBetween(t, dateStr);
   if (daysLeft < 1) { toast('A data da prova precisa ser depois de hoje.', 'error'); return; }
   if (!c.materias.length) { toast('Adicione matérias antes de gerar o cronograma.', 'error'); return; }
-  if (c.cronograma?.length && !confirm('Gerar de novo vai redistribuir os tópicos (o que você já marcou como feito continua marcado). Continuar?')) return;
+  if (c.cronograma?.length && !(await askConfirm('Gerar de novo vai redistribuir os tópicos (o que você já marcou como feito continua marcado). Continuar?'))) return;
   c.examDate = dateStr;
 
   // fila por matéria, intercalando (Português, RLM, Direito, Português, RLM...) para não passar dias numa matéria só
@@ -2620,8 +2652,8 @@ async function generateMateriaContent(fromRegen){
     toast(e.message, 'error');
   } finally { stop(); }
 }
-function regenerateMateria(){
-  if (!confirm('Gerar um material novo para esta matéria? O atual (aulas, flashcards e quiz) e o progresso dela serão substituídos.')) return;
+async function regenerateMateria(){
+  if (!(await askConfirm('Gerar um material novo? O atual (aulas, flashcards e quiz) e o progresso dele serão substituídos.', { okLabel:'Gerar de novo' }))) return;
   generateMateriaContent(true);
 }
 
@@ -2864,7 +2896,8 @@ function showResult(mode){
 // ═══════════════════════════════════════════════════════════════════
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
-    // a janela do modo gratuito pode estar por cima de outra (ex.: sugerir tópicos) — ela fecha primeiro
+    // janelas que ficam por cima de outras fecham primeiro
+    if (!$('overlay-confirm').classList.contains('hidden')) { closeConfirm(false); return; }
     if (!$('overlay-manual-ai').classList.contains('hidden')) { cancelManualAi(); return; }
     const open = document.querySelector('.overlay:not(.hidden)');
     if (open && !['overlay-setup','overlay-auth'].includes(open.id)) { open.classList.add('hidden'); return; }
@@ -2995,12 +3028,12 @@ function exportBackup(){
 function importBackup(file){
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     try {
       const data = JSON.parse(reader.result);
       const s = data.state || data;
       if (!s || (!s.progress && !s.concursos)) throw new Error('Arquivo não parece um backup deste app.');
-      if (!confirm('Restaurar este backup vai SUBSTITUIR todo o progresso atual. Continuar?')) return;
+      if (!(await askConfirm('Restaurar este backup vai SUBSTITUIR todo o progresso atual. Continuar?', { okLabel:'Restaurar', danger:true }))) return;
       state = s; ensureState(); scheduleSave(); updateBadges(); showPage('home');
       toast('Backup restaurado ✓', 'ok');
     } catch(e) { toast('Não foi possível ler o backup: ' + e.message, 'error'); }
@@ -3008,8 +3041,8 @@ function importBackup(file){
   };
   reader.readAsText(file);
 }
-function resetData(){
-  if(!confirm('Zerar TODO o progresso (PDI e concursos)? Dica: baixe um backup antes. Não pode ser desfeito.'))return;
+async function resetData(){
+  if(!(await askConfirm('Zerar TODO o progresso (PDI e concursos)? Dica: baixe um backup antes. Não pode ser desfeito.', { okLabel:'Zerar tudo', danger:true })))return;
   state=newState();
   scheduleSave(); updateBadges(); showPage('home');
 }
