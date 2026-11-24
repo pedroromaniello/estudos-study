@@ -510,6 +510,32 @@ create policy "own data" on public.progress
   </div>
 </div>
 
+<div class="overlay hidden" id="overlay-manual-ai">
+  <div class="overlay-card" style="max-width:620px;max-height:94vh;overflow-y:auto">
+    <div class="overlay-title">✦ Gerar grátis com o Claude.ai</div>
+    <div class="overlay-sub">Sem chave de API: use a sua conta do Claude.ai (já incluída na sua assinatura). São 3 passos:</div>
+    <div class="step-box"><b>Passo 1 — Copie o pedido</b>
+      <textarea class="inp" id="ma-prompt" readonly style="min-height:110px;font-family:var(--mono);font-size:11px"></textarea>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-primary" style="font-size:12px" id="ma-copy" onclick="copyManualAiPrompt()">📋 Copiar pedido</button>
+        <a class="btn btn-ghost" style="font-size:12px;text-decoration:none" href="https://claude.ai/new" target="_blank" rel="noopener">Abrir o Claude.ai ↗</a>
+      </div>
+    </div>
+    <div class="step-box"><b>Passo 2 — Cole no Claude.ai e envie</b>
+      Abra uma conversa nova no Claude.ai, cole o pedido (Ctrl+V) e envie. Espere a resposta terminar por completo.
+    </div>
+    <div class="step-box"><b>Passo 3 — Copie a resposta inteira e cole aqui</b>
+      <span id="ma-hint">Use o botão de copiar do bloco de código da resposta para pegar tudo.</span>
+      <textarea class="inp" id="ma-response" style="min-height:120px;font-family:var(--mono);font-size:11px" placeholder="Cole aqui a resposta do Claude.ai"></textarea>
+    </div>
+    <div class="err" id="ma-err"></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="useManualAiResponse()">✓ Usar resposta</button>
+      <button class="btn btn-ghost" onclick="cancelManualAi()">Cancelar</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay hidden" id="overlay-pdi-change">
   <div class="overlay-card">
     <div class="overlay-title">🤝 Registrar mudança combinada</div>
@@ -604,7 +630,7 @@ create policy "own data" on public.progress
     <div id="mat-empty" class="gen-empty hidden">
       <div class="gen-empty-icon">✦</div>
       <div class="gen-empty-title">Ainda não há material de estudo para esta matéria</div>
-      <div class="gen-empty-sub">A IA vai gerar aulas explicativas, flashcards e um quiz com base nos tópicos desta matéria. Isso usa sua chave de API configurada em Ajustes.</div>
+      <div class="gen-empty-sub">A IA vai gerar aulas explicativas, flashcards e um quiz com base nos tópicos. Sem chave de API é grátis: o app te dá um pedido para colar no Claude.ai e você cola a resposta de volta.</div>
       <button class="btn btn-ai" id="mat-gen-btn" onclick="generateMateriaContent()">✦ Gerar material de estudo com IA</button>
       <div style="font-size:11px;color:var(--muted);margin-top:10px">Leva cerca de 1 a 2 minutos.</div>
     </div>
@@ -1470,16 +1496,62 @@ function saveApiKey(){
   const v = $('apikey-input').value.trim();
   const model = $('model-input').value.trim() || DEFAULT_MODEL;
   const errEl = $('apikey-err');
-  if (!v.startsWith('sk-ant')) { errEl.textContent='Chave inválida — deve começar com sk-ant'; errEl.style.display='block'; return; }
+  if (!v) { // campo vazio = voltar ao modo gratuito
+    apiKey = ''; lsSet(LS_APIKEY, '');
+    hideApiKeyOverlay(); renderSettings(); toast('Modo gratuito ativado (copiar e colar no Claude.ai) ✓', 'ok'); return;
+  }
+  if (!v.startsWith('sk-ant')) { errEl.textContent='Chave inválida — deve começar com sk-ant (ou deixe em branco para usar o modo gratuito)'; errEl.style.display='block'; return; }
   apiKey = v; aiModel = model;
   lsSet(LS_APIKEY, v); lsSet(LS_MODEL, model);
   hideApiKeyOverlay(); renderSettings(); toast('IA configurada ✓', 'ok');
 }
-function requireApiKey(){
-  if (!apiKey) { toast('Configure sua chave da IA primeiro.'); showApiKeyOverlay(); return false; }
-  return true;
+// Sem chave de API, a IA funciona no modo gratuito (copiar e colar no Claude.ai) — nunca bloqueia.
+function requireApiKey(){ return true; }
+
+// ── Modo gratuito: o usuário leva o pedido ao Claude.ai e cola a resposta de volta ──
+let manualAi = null; // { resolve, reject, expectJson }
+const MANUAL_JSON_NOTE = '\n\nIMPORTANTE: responda diretamente aqui no chat, com o JSON completo em um único bloco de código. Não crie arquivos, artefatos nem documentos, e não escreva nada fora do bloco.';
+function manualClaude(prompt){
+  if (manualAi) manualAi.reject(new Error('Geração cancelada.'));
+  const expectJson = /JSON/.test(prompt);
+  return new Promise((resolve, reject) => {
+    manualAi = { resolve, reject, expectJson };
+    $('ma-prompt').value = prompt + (expectJson ? MANUAL_JSON_NOTE : '');
+    $('ma-response').value = '';
+    $('ma-err').style.display = 'none';
+    $('ma-hint').textContent = expectJson
+      ? 'Use o botão de copiar do bloco de código da resposta para pegar tudo.'
+      : 'Selecione e copie o texto da resposta.';
+    $('ma-copy').textContent = '📋 Copiar pedido';
+    $('overlay-manual-ai').classList.remove('hidden');
+  });
 }
+async function copyManualAiPrompt(){
+  const ta = $('ma-prompt');
+  try { await navigator.clipboard.writeText(ta.value); }
+  catch { ta.select(); document.execCommand('copy'); }
+  $('ma-copy').textContent = '✓ Copiado!';
+}
+function useManualAiResponse(){
+  if (!manualAi) return;
+  const text = $('ma-response').value.trim();
+  const errEl = $('ma-err');
+  if (!text) { errEl.textContent = 'Cole a resposta do Claude.ai no campo do passo 3.'; errEl.style.display = 'block'; return; }
+  if (manualAi.expectJson) {
+    try { extractJson(text); }
+    catch { errEl.textContent = 'A resposta parece incompleta. Volte ao Claude.ai, use o botão de copiar do bloco de código e cole a resposta inteira.'; errEl.style.display = 'block'; return; }
+  }
+  const { resolve } = manualAi; manualAi = null;
+  hideOverlay('overlay-manual-ai');
+  resolve({ text, truncated: false });
+}
+function cancelManualAi(){
+  hideOverlay('overlay-manual-ai');
+  if (manualAi) { const { reject } = manualAi; manualAi = null; reject(new Error('Geração cancelada.')); }
+}
+
 async function callClaude(prompt, maxTokens){
+  if (!apiKey) return manualClaude(prompt);
   let res;
   try {
     res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1514,6 +1586,7 @@ function extractJson(text){
   catch { throw new Error('A resposta da IA veio incompleta. Tente de novo.'); }
 }
 function withTimer(btn, label){
+  if (!apiKey) label = 'Aguardando o Claude.ai...';
   const original = btn.textContent; const t0 = Date.now();
   btn.disabled = true; btn.textContent = `${label} 0s`;
   const iv = setInterval(()=>{ btn.textContent = `${label} ${Math.round((Date.now()-t0)/1000)}s`; }, 1000);
@@ -2791,6 +2864,8 @@ function showResult(mode){
 // ═══════════════════════════════════════════════════════════════════
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    // a janela do modo gratuito pode estar por cima de outra (ex.: sugerir tópicos) — ela fecha primeiro
+    if (!$('overlay-manual-ai').classList.contains('hidden')) { cancelManualAi(); return; }
     const open = document.querySelector('.overlay:not(.hidden)');
     if (open && !['overlay-setup','overlay-auth'].includes(open.id)) { open.classList.add('hidden'); return; }
   }
@@ -2875,8 +2950,8 @@ function renderSettings(){
     </div>
     <div class="settings-card">
       <h3>✦ IA (Anthropic)</h3>
-      <p>Usada para organizar/sugerir editais, gerar aulas, flashcards e quiz, e explicar flashcards. Status: ${apiKey?`<span style="color:var(--green)">✅ Configurada</span> · modelo <code>${escapeHtml(aiModel)}</code>`:`<span style="color:var(--amber)">⚠️ Não configurada</span>`}</p>
-      <button class="btn btn-ai" style="font-size:12px" onclick="showApiKeyOverlay()">${apiKey?'Alterar chave / modelo':'Configurar chave →'}</button>
+      <p>Usada para organizar/sugerir editais, gerar aulas, flashcards e quiz, e explicar flashcards. Status: ${apiKey?`<span style="color:var(--green)">✅ Chave configurada</span> · modelo <code>${escapeHtml(aiModel)}</code>`:`<span style="color:var(--green)">✅ Modo gratuito</span> — sem chave, cada pedido à IA abre uma janela para você copiar, colar no Claude.ai e trazer a resposta de volta. A chave de API (paga por uso) é opcional e deixa tudo automático.`}</p>
+      <button class="btn btn-ai" style="font-size:12px" onclick="showApiKeyOverlay()">${apiKey?'Alterar chave / modelo':'Usar chave de API (opcional, paga)'}</button>
     </div>
     <div class="settings-card">
       <h3>Backup</h3>
